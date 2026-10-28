@@ -1,7 +1,8 @@
 """Synthetic OpenAlex-shaped data with planted research lines, for testing without network."""
 import random
+import zlib
 
-from .openalex import normalize_all
+from .openalex import assign_roles, normalize_all
 
 TOPICS = {
     "gene editing": ["crispr", "cas9", "genome", "editing", "guide", "nuclease", "off-target"],
@@ -15,7 +16,8 @@ GENERIC = ["novel", "role", "mechanisms", "analysis", "approach", "evidence", "p
 def mock_raw_works(n_per_topic=100, year_from=2005, year_to=2024, seed=0):
     rng = random.Random(seed)
     topics = list(TOPICS)
-    pis = {t: [f"{t.split()[0].title()} PI {i}" for i in range(4)] for t in topics}
+    teams = {t: [[f"{t.split()[0].title()} team{j} member{k}" for k in range(3)] for j in range(2)]
+             for t in topics}  # two 3-person labs per research line
 
     papers = [{"topic": t, "year": rng.randint(year_from, year_to)}
               for t in topics for _ in range(n_per_topic)]
@@ -47,11 +49,15 @@ def mock_raw_works(n_per_topic=100, year_from=2005, year_to=2024, seed=0):
         t = p["topic"]
         words = rng.sample(TOPICS[t], 4) + rng.sample(GENERIC, 2)
         rng.shuffle(words)
-        names = [f"Author {rng.randint(1, 400)}" for _ in range(rng.randint(2, 4))]
-        last = rng.choice(pis[t]) if rng.random() < 0.6 else f"Author {rng.randint(1, 400)}"
-        authorships = ([{"author_position": "first", "author": {"id": "https://openalex.org/A0", "display_name": names[0]}}]
-                       + [{"author_position": "middle", "author": {"id": "https://openalex.org/A0", "display_name": n}} for n in names[1:]]
-                       + [{"author_position": "last", "author": {"id": "https://openalex.org/A0", "display_name": last}}])
+        if rng.random() < 0.7:  # a whole lab co-authors, plus 0-2 outsiders
+            team = rng.choice(teams[t])
+            names = [team[0]] + [f"Author {rng.randint(1, 400)}" for _ in range(rng.randint(0, 2))] + team[1:]
+        else:
+            names = [f"Author {rng.randint(1, 400)}" for _ in range(rng.randint(3, 5))]
+        names = list(dict.fromkeys(names))
+        authorships = [{"author_position": "first" if i == 0 else "last" if i == len(names) - 1 else "middle",
+                        "author": {"id": f"https://openalex.org/A{zlib.crc32(n.encode())}", "display_name": n}}
+                       for i, n in enumerate(names)]
         raws.append({
             "id": f"https://openalex.org/{p['id']}",
             "title": " ".join(words).capitalize(),
@@ -67,3 +73,15 @@ def mock_raw_works(n_per_topic=100, year_from=2005, year_to=2024, seed=0):
 
 def mock_works(**kwargs):
     return normalize_all(mock_raw_works(**kwargs))
+
+
+def mock_corpus(n_seeds=40, expand=True, seed=0):
+    """Mimic the two-pass fetch: random seeds, then everything citing or cited by them."""
+    universe = mock_works()
+    seed_ids = {w["id"] for w in random.Random(seed).sample(universe, n_seeds)}
+    if not expand:
+        return assign_roles([w for w in universe if w["id"] in seed_ids], seed_ids)
+    cited = {r for w in universe if w["id"] in seed_ids for r in w["refs"]}
+    keep = [w for w in universe
+            if w["id"] in seed_ids or w["id"] in cited or any(r in seed_ids for r in w["refs"])]
+    return assign_roles(keep, seed_ids)

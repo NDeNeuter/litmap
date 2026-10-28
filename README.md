@@ -14,7 +14,7 @@ pip install -r requirements.txt
 python -m unittest discover -s tests    # core tests (no network needed)
 python cli.py --mock                    # try the pipeline on synthetic data
 python cli.py --query "CRISPR base editing" --count-only    # FIRST real API call: just a count
-python cli.py --query "CRISPR base editing" --from 2015 --max 1000
+python cli.py --query "CRISPR base editing" --seeds 200 --graph-line 1
 streamlit run app.py                    # the interactive app
 ```
 
@@ -26,17 +26,30 @@ export OPENALEX_API_KEY=your_key        # Windows PowerShell: $env:OPENALEX_API_
 Or paste it in the app sidebar. The API works without a key at a much smaller daily budget.
 
 ## How it works
-1. `core/openalex.py` fetches works (cursor paging, SQLite cache in `cache.sqlite`, count preview).
-2. `core/analysis.py` builds a citation graph, adds co-citation edges, clusters with Louvain,
-   attaches reviews to the line they cite most, then ranks papers and labels each line.
-3. `app.py` and `cli.py` are thin front ends over `core/`.
+1. **Seeds.** `core/openalex.py` fetches the 200 most relevant papers for your keywords (count preview first).
+2. **First neighbours.** It then fetches every paper the seeds cite (`openalex:` ID batches) and every paper
+   citing a seed (`cites:` filter, capped by "Max citing papers"). Roles are recorded: seed, cited, citing, both.
+3. **Graph.** `core/analysis.py` builds a directed weighted graph. Edge u -> v means "v cites u" (cited paper to
+   citing paper). The weight starts at 1 for a direct citation and grows by 1 every time two papers are
+   co-cited by a paper in the corpus. Co-cited pairs without a direct citation get an edge from the older to
+   the newer paper.
+4. **Research lines.** `core/clustering.py` is a PLACEHOLDER (Louvain on the undirected weights, reviews
+   attached afterwards). Replace `cluster_lines` with your own method.
+5. **Inspect.** Per line: key papers, reviews, the line's graph (force or timeline layout), and frequently
+   co-occurring author groups (Apriori frequent itemsets, `core/authors.py`).
 
-## Known limits of this minimal version
-- Fetching returns the top-N papers by relevance, not the whole field. Raise "Max papers" if lines look thin.
-- Only papers inside the fetched set are linked; no snowballing yet.
-- Louvain runs in pure Python (networkx). Beyond roughly 20k papers, switch to `python-igraph` + `leidenalg`.
+## Cost and size
+The OpenAlex free key allows roughly 10,000 list requests per day (100 records each). Seeds cost ~2 requests,
+cited papers ~1 per 100 IDs, citing papers ~1 per 100 records. The graph step is the real limit: memory and time
+grow with the number of papers and with co-citation pairs. Raise "Min co-citations" if it gets slow.
+
+## Known limits
+- Neighbours of the seeds are not filtered by year or type; only the seeds are.
+- When the citing-paper cap bites, the most-cited citing papers are kept (biases toward older work).
+- Using OR in the `cites:` filter is assumed to work like OR elsewhere in OpenAlex. If the first real fetch
+  fails, set `CITES_BATCH = 1` in `core/openalex.py`.
 - Review detection relies on OpenAlex's `type` field, which is imperfect.
-- Author names are not disambiguated (names only, no ID merging).
+- Authors are matched by OpenAlex author id, which is imperfect; papers with more than 25 authors are ignored.
 
 ## Deploy on Streamlit Community Cloud (from GitHub)
 1. Create an empty repository on github.com (no README), then from the project folder:
